@@ -1,6 +1,6 @@
 """
-Сервер доступа 0.0.1: проверка и добавление разрешённых Telegram ID.
-Запуск: uvicorn jarvis_max_access:app --host 0.0.0.0 --port 8000
+Сервер доступа Nexa: проверка и добавление разрешённых Telegram ID.
+Запуск: uvicorn nexa_max_access:app --host 0.0.0.0 --port 8001
 """
 import json
 import os
@@ -19,7 +19,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Файл со списком разрешённых ID (рядом со скриптом или в текущей папке)
 DATA_DIR = Path(__file__).resolve().parent
 ALLOWED_FILE = DATA_DIR / "nexa_allowed.json"
 
@@ -53,7 +52,7 @@ def check_api_key(x_api_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid x-api-key")
 
 
-@app.get("/api/jarvis-max/check")
+@app.get("/api/nexa/check")
 def check_access(user_id: str, x_api_key: str | None = Header(None, alias="x-api-key")):
     """Проверка: разрешён ли пользователь с данным Telegram ID."""
     check_api_key(x_api_key)

@@ -20,6 +20,15 @@ winget install Gyan.FFmpeg
 
 `resources/ffmpeg/ffmpeg.exe`
 
+## Linux
+
+```bash
+sudo apt install ffmpeg    # Debian / Ubuntu
+sudo dnf install ffmpeg    # Fedora
+```
+
+Либо `resources/ffmpeg/ffmpeg`
+
 ## Проверка
 
 ```bash

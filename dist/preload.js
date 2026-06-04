@@ -30,6 +30,10 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
 	// Advanced System Control
 	systemOpenApp: appName =>
 		electron_1.ipcRenderer.invoke('system-open-app', appName),
+	systemCloseApp: appName =>
+		electron_1.ipcRenderer.invoke('system-close-app', appName),
+	systemMinimizeApp: appName =>
+		electron_1.ipcRenderer.invoke('system-minimize-app', appName),
 	systemLaunchFile: filePath =>
 		electron_1.ipcRenderer.invoke('system-launch-file', filePath),
 	systemOpenFolderSmart: folderHint =>
@@ -81,6 +85,7 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
 	// Installed browsers
 	getInstalledBrowsers: () =>
 		electron_1.ipcRenderer.invoke('get-installed-browsers'),
+	getInstalledApps: () => electron_1.ipcRenderer.invoke('get-installed-apps'),
 	// GPU Crash notifications
 	onGpuCrash: callback => {
 		electron_1.ipcRenderer.on('gpu-crash-notification', (event, data) =>

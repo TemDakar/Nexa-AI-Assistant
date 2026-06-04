@@ -64,6 +64,7 @@ const util_1 = require('util')
 const execAsync = (0, util_1.promisify)(child_process_1.exec)
 const execFileAsync = (0, util_1.promisify)(child_process_1.execFile)
 const fs = require('fs')
+const platform = require('./platform')
 const { spawn } = require('child_process')
 const { Tray, Menu, nativeImage } = electron_1
 let mainWindow = null
@@ -817,255 +818,39 @@ electron_1.ipcMain.handle('devtools-toggle', () => {
 // System Control handlers
 electron_1.ipcMain.handle('system-get-volume', async () => {
 	try {
-		if (process.platform === 'darwin') {
-			const { stdout } = await execAsync(
-				"osascript -e 'output volume of (get volume settings)'",
-			)
-			const v = parseInt(String(stdout).trim(), 10)
-			return {
-				success: true,
-				volume: isNaN(v) ? 50 : Math.min(100, Math.max(0, v)),
-			}
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		// Используем правильный метод через AudioDeviceCmdlets
-		const command = `powershell -Command "Import-Module -Name AudioDeviceCmdlets -ErrorAction SilentlyContinue; $volume = (Get-AudioDevice -PlaybackVolume).Volume; Write-Output $volume"`
-		try {
-			const { stdout } = await execAsync(command)
-			const volumeStr = stdout.trim()
-			const volumeFloat = parseFloat(volumeStr)
-			if (!isNaN(volumeFloat) && volumeFloat >= 0 && volumeFloat <= 1) {
-				const volume = Math.round(volumeFloat * 100)
-				return { success: true, volume }
-			}
-		} catch (e) {
-			console.warn(
-				'Первый метод получения громкости не сработал, пробуем альтернативный...',
-			)
-		}
-
-		// Альтернативный метод через Windows Audio API
-		const altCommand = `powershell -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Audio { [DllImport(\"user32.dll\")] public static extern int SendMessageW(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam); }'; $result = [Audio]::SendMessageW([IntPtr]0xFFFF, 0x319, [IntPtr]0, [IntPtr]0); $volume = if ($result -ge 0) { $result / 65535.0 } else { 0.5 }; Write-Output $volume"`
-		try {
-			const { stdout } = await execAsync(altCommand)
-			const volumeStr = stdout.trim()
-			const volumeFloat = parseFloat(volumeStr)
-			if (!isNaN(volumeFloat) && volumeFloat >= 0 && volumeFloat <= 1) {
-				const volume = Math.round(volumeFloat * 100)
-				return { success: true, volume }
-			}
-		} catch (e) {
-			console.warn('Альтернативный метод также не сработал')
-		}
-
-		// Если ничего не сработало, возвращаем значение по умолчанию
-		console.warn(
-			'Не удалось получить громкость, используем значение по умолчанию 50%',
-		)
-		return { success: true, volume: 50 }
+		return await platform.getVolume()
 	} catch (error) {
 		console.error('Get volume error:', error)
-		// Возвращаем значение по умолчанию вместо ошибки
 		return { success: true, volume: 50 }
 	}
 })
 electron_1.ipcMain.handle('system-set-volume', async (event, volume) => {
 	try {
-		if (process.platform === 'darwin') {
-			const clampedVolume = Math.max(
-				0,
-				Math.min(100, Math.round(Number(volume) || 0)),
-			)
-			await execAsync(
-				`osascript -e 'set volume output volume ${clampedVolume}'`,
-			)
-			return { success: true, volume: clampedVolume }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		if (isNaN(volume) || volume < 0 || volume > 100) {
-			return { error: 'Громкость должна быть числом от 0 до 100' }
-		}
-		const clampedVolume = Math.max(0, Math.min(100, Math.round(volume)))
-		let command = `powershell -Command "Import-Module -Name AudioDeviceCmdlets -ErrorAction SilentlyContinue; Set-AudioDevice -PlaybackVolume ${clampedVolume}; Write-Output ${clampedVolume}"`
-		try {
-			await execAsync(command)
-			return { success: true, volume: clampedVolume }
-		} catch (e) {
-			console.warn('AudioDeviceCmdlets не найден, пробуем установить модуль...')
-		}
-		try {
-			await execAsync(
-				'powershell -Command "Install-Module -Name AudioDeviceCmdlets -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue"',
-			)
-			await execAsync(command)
-			return { success: true, volume: clampedVolume }
-		} catch (e2) {
-			console.error(
-				'Установка модуля или Set-AudioDevice не удалась:',
-				e2.message,
-			)
-		}
-		return {
-			error:
-				'Не удалось изменить громкость. Установите вручную: PowerShell → Install-Module AudioDeviceCmdlets -Scope CurrentUser',
-		}
+		return await platform.setVolume(volume)
 	} catch (error) {
 		console.error('Set volume error:', error)
 		return { error: error.message || 'Ошибка установки громкости' }
 	}
 })
-electron_1.ipcMain.handle(
-	'system-increase-volume',
-	async (event, step = 10) => {
-		try {
-			if (process.platform === 'darwin') {
-				const { stdout } = await execAsync(
-					"osascript -e 'output volume of (get volume settings)'",
-				)
-				let v = parseInt(String(stdout).trim(), 10)
-				if (isNaN(v)) v = 50
-				const s = Math.max(1, Math.min(100, Math.round(Number(step) || 10)))
-				const newVol = Math.min(100, v + s)
-				await execAsync(`osascript -e 'set volume output volume ${newVol}'`)
-				return { success: true, volume: newVol }
-			}
-			if (process.platform !== 'win32') {
-				return { error: 'Только для Windows' }
-			}
-			// Валидация шага
-			if (isNaN(step) || step <= 0) {
-				step = 10
-			}
-			step = Math.max(1, Math.min(100, Math.round(step)))
-
-			// Получаем текущую громкость
-			let currentVolume = 50 // Значение по умолчанию
-			try {
-				const getVolumeCommand = `powershell -Command "Import-Module -Name AudioDeviceCmdlets -ErrorAction SilentlyContinue; $vol = (Get-AudioDevice -PlaybackVolume).Volume; Write-Output $vol"`
-				const { stdout } = await execAsync(getVolumeCommand)
-				const volumeStr = stdout.trim()
-				const volumeFloat = parseFloat(volumeStr)
-				if (!isNaN(volumeFloat) && volumeFloat >= 0 && volumeFloat <= 1) {
-					currentVolume = Math.round(volumeFloat * 100)
-				} else if (
-					!isNaN(volumeFloat) &&
-					volumeFloat >= 0 &&
-					volumeFloat <= 100
-				) {
-					currentVolume = Math.round(volumeFloat)
-				}
-			} catch (e) {
-				console.warn(
-					'Не удалось получить текущую громкость, используем значение по умолчанию:',
-					e.message,
-				)
-			}
-
-			const newVolume = Math.min(100, currentVolume + step)
-			let setVolumeCommand = `powershell -Command "Import-Module -Name AudioDeviceCmdlets -ErrorAction SilentlyContinue; Set-AudioDevice -PlaybackVolume ${newVolume}; Write-Output ${newVolume}"`
-			try {
-				await execAsync(setVolumeCommand)
-				return { success: true, volume: newVolume }
-			} catch (e) {
-				await execAsync(
-					'powershell -Command "Install-Module -Name AudioDeviceCmdlets -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue"',
-				)
-				await execAsync(setVolumeCommand)
-				return { success: true, volume: newVolume }
-			}
-		} catch (error) {
-			console.error('Increase volume error:', error)
-			return { error: error.message || 'Ошибка увеличения громкости' }
-		}
-	},
-)
-electron_1.ipcMain.handle(
-	'system-decrease-volume',
-	async (event, step = 10) => {
-		try {
-			if (process.platform === 'darwin') {
-				const { stdout } = await execAsync(
-					"osascript -e 'output volume of (get volume settings)'",
-				)
-				let v = parseInt(String(stdout).trim(), 10)
-				if (isNaN(v)) v = 50
-				const s = Math.max(1, Math.min(100, Math.round(Number(step) || 10)))
-				const newVol = Math.max(0, v - s)
-				await execAsync(`osascript -e 'set volume output volume ${newVol}'`)
-				return { success: true, volume: newVol }
-			}
-			if (process.platform !== 'win32') {
-				return { error: 'Только для Windows' }
-			}
-			if (isNaN(step) || step <= 0) {
-				step = 10
-			}
-			step = Math.max(1, Math.min(100, Math.round(step)))
-
-			let currentVolume = 50
-			try {
-				const getVolumeCommand = `powershell -Command "Import-Module -Name AudioDeviceCmdlets -ErrorAction SilentlyContinue; $vol = (Get-AudioDevice -PlaybackVolume).Volume; Write-Output $vol"`
-				const { stdout } = await execAsync(getVolumeCommand)
-				const volumeStr = stdout.trim()
-				const volumeFloat = parseFloat(volumeStr)
-				if (!isNaN(volumeFloat) && volumeFloat >= 0 && volumeFloat <= 1) {
-					currentVolume = Math.round(volumeFloat * 100)
-				} else if (
-					!isNaN(volumeFloat) &&
-					volumeFloat >= 0 &&
-					volumeFloat <= 100
-				) {
-					currentVolume = Math.round(volumeFloat)
-				}
-			} catch (e) {
-				console.warn(
-					'Не удалось получить текущую громкость, используем значение по умолчанию:',
-					e.message,
-				)
-			}
-
-			const newVolume = Math.max(0, currentVolume - step)
-			let setVolumeCommand = `powershell -Command "Import-Module -Name AudioDeviceCmdlets -ErrorAction SilentlyContinue; Set-AudioDevice -PlaybackVolume ${newVolume}; Write-Output ${newVolume}"`
-			try {
-				await execAsync(setVolumeCommand)
-				return { success: true, volume: newVolume }
-			} catch (e) {
-				await execAsync(
-					'powershell -Command "Install-Module -Name AudioDeviceCmdlets -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue"',
-				)
-				await execAsync(setVolumeCommand)
-				return { success: true, volume: newVolume }
-			}
-		} catch (error) {
-			console.error('Decrease volume error:', error)
-			return { error: error.message || 'Ошибка уменьшения громкости' }
-		}
-	},
-)
+electron_1.ipcMain.handle('system-increase-volume', async (event, step = 10) => {
+	try {
+		return await platform.increaseVolume(step)
+	} catch (error) {
+		console.error('Increase volume error:', error)
+		return { error: error.message || 'Ошибка увеличения громкости' }
+	}
+})
+electron_1.ipcMain.handle('system-decrease-volume', async (event, step = 10) => {
+	try {
+		return await platform.decreaseVolume(step)
+	} catch (error) {
+		console.error('Decrease volume error:', error)
+		return { error: error.message || 'Ошибка уменьшения громкости' }
+	}
+})
 electron_1.ipcMain.handle('system-mute-volume', async () => {
 	try {
-		if (process.platform === 'darwin') {
-			await execAsync("osascript -e 'set volume output volume 0'")
-			return { success: true, volume: 0 }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		let command = `powershell -Command "Import-Module -Name AudioDeviceCmdlets -ErrorAction SilentlyContinue; Set-AudioDevice -PlaybackVolume 0; Write-Output 0"`
-		try {
-			await execAsync(command)
-			return { success: true, volume: 0 }
-		} catch (e) {
-			await execAsync(
-				'powershell -Command "Install-Module -Name AudioDeviceCmdlets -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue"',
-			)
-			await execAsync(command)
-			return { success: true, volume: 0 }
-		}
+		return await platform.muteVolume()
 	} catch (error) {
 		console.error('Mute volume error:', error)
 		return { error: error.message || 'Ошибка отключения звука' }
@@ -1074,14 +859,14 @@ electron_1.ipcMain.handle('system-mute-volume', async () => {
 electron_1.ipcMain.handle('system-get-info', async () => {
 	console.log('📊 Запрос системной информации...')
 	try {
-		const platform = os.platform()
+		const osPlatform = os.platform()
 		const arch = os.arch()
 		const hostname = os.hostname()
 		const totalMem = os.totalmem()
 		const freeMem = os.freemem()
 		const uptime = os.uptime()
 		let systemInfo = {
-			platform,
+			platform: osPlatform,
 			arch,
 			hostname,
 			totalMemory: Math.round((totalMem / 1024 / 1024 / 1024) * 100) / 100, // GB
@@ -1368,7 +1153,7 @@ electron_1.ipcMain.handle('system-get-info', async () => {
 		console.error('Stack:', error.stack)
 		// Все равно возвращаем базовую информацию, если возможно
 		try {
-			const platform = os.platform()
+			const osPlatformFallback = os.platform()
 			const arch = os.arch()
 			const hostname = os.hostname()
 			const totalMem = os.totalmem()
@@ -1377,7 +1162,7 @@ electron_1.ipcMain.handle('system-get-info', async () => {
 			return {
 				success: true,
 				info: {
-					platform,
+					platform: osPlatformFallback,
 					arch,
 					hostname,
 					totalMemory: Math.round((totalMem / 1024 / 1024 / 1024) * 100) / 100,
@@ -1503,6 +1288,9 @@ function getWhisperFfmpegHint() {
 	}
 	if (process.platform === 'win32') {
 		return 'FFmpeg не найден. winget install Gyan.FFmpeg или положите ffmpeg.exe в resources/ffmpeg/'
+	}
+	if (process.platform === 'linux') {
+		return 'FFmpeg не найден. sudo apt install ffmpeg (Debian/Ubuntu) или положите ffmpeg в resources/ffmpeg/'
 	}
 	return 'FFmpeg не найден. Установите ffmpeg в PATH или resources/ffmpeg/'
 }
@@ -2064,1000 +1852,63 @@ electron_1.ipcMain.handle('windows-speech-stop', () => {
 		return { error: error.message || 'UNKNOWN_ERROR' }
 	}
 })
-// --- Windows: пути, алиасы приложений, поиск в PATH (без ручных команд пользователя) ---
-/** Имя из IPC: пробелы могут приходить как %20 (кодирует renderer). URL не меняем. */
-function normalizeAppNameFromIpc(s) {
-	const t = String(s || '').trim()
-	if (!t) return t
-	if (/^https?:\/\//i.test(t) || /^file:\/\//i.test(t)) return t
-	return t.replace(/%20/gi, ' ')
-}
-function expandWindowsEnvPath(input) {
-	if (!input || typeof input !== 'string') return ''
-	let s = input.trim()
-	if (s === '~' || s === '~/') return os.homedir()
-	if (s.startsWith('~/') || s.startsWith('~\\'))
-		return path.join(os.homedir(), s.slice(2))
-	s = s.replace(/%([^%]+)%/g, (_, k) => process.env[k] || `%${k}%`)
-	return s
-}
-const WIN_APP_ALIASES = {
-	калькулятор: 'calc',
-	блокнот: 'notepad',
-	проводник: 'explorer',
-	файлы: 'explorer',
-	краска: 'mspaint',
-	рисовалку: 'mspaint',
-	вордпад: 'wordpad',
-	'диспетчер задач': 'taskmgr',
-	'task manager': 'taskmgr',
-	параметры: 'ms-settings:',
-	настройки: 'ms-settings:',
-	'панель управления': 'control',
-	реестр: 'regedit',
-	службы: 'services.msc',
-	'диспетчер устройств': 'devmgmt.msc',
-	'командную строку': 'cmd',
-	камера: 'microsoft.windows.camera:',
-	// Русские имена → подсказка для поиска .exe (реестр App Paths, ярлыки, Program Files)
-	винскп: 'winscp',
-	'вин сцп': 'winscp',
-	винсцп: 'winscp',
-	телеграм: 'telegram',
-	телеграмм: 'telegram',
-	дискорд: 'discord',
-	спотифай: 'spotify',
-	стим: 'steam',
-	хром: 'chrome',
-	'гугл хром': 'chrome',
-	эдж: 'msedge',
-	'майкрософт эдж': 'msedge',
-	опера: 'opera',
-	файрфокс: 'firefox',
-	мозилла: 'firefox',
-	тор: 'tor browser',
-	зум: 'zoom',
-	скайп: 'skype',
-	слак: 'slack',
-	нотепад: 'notepad',
-	павершелл: 'powershell',
-	ворд: 'winword',
-	эксель: 'excel',
-	аутлук: 'outlook',
-	'павер поинт': 'powerpnt',
-	'вс код': 'code',
-	фигма: 'figma',
-}
-function resolveWindowsAppQuery(raw) {
-	const q = (raw || '').trim()
-	if (!q) return q
-	const lower = q.toLowerCase()
-	if (WIN_APP_ALIASES[lower]) return WIN_APP_ALIASES[lower]
-	return q
-}
-async function tryWhereExecutable(name) {
-	const base = (name || '').trim()
-	if (!base) return null
-	const candidates = [
-		base,
-		base.toLowerCase().endsWith('.exe') ? base : `${base}.exe`,
-	]
-	for (const c of candidates) {
+// Система: dist/platform/index.js → darwin.js | win32.js | linux.js
+function platformCall(fn, fallback) {
+	return async (...args) => {
 		try {
-			const { stdout } = await execAsync(`where.exe ${JSON.stringify(c)}`, {
-				windowsHide: true,
-			})
-			const line = stdout.trim().split(/\r?\n/).filter(Boolean)[0]
-			if (line && fs.existsSync(line.trim())) return line.trim()
-		} catch (_) {
-			/* ignore */
-		}
-	}
-	return null
-}
-/** Варианты строки для поиска .exe: целиком, без пробелов, первое/последнее слово (для App Paths вроде obs64.exe). */
-function expandWindowsExeSearchSeeds(seed) {
-	const raw = String(seed || '')
-		.trim()
-		.replace(/\.exe$/i, '')
-	if (!raw) return []
-	const lower = raw
-		.toLowerCase()
-		.replace(/['"`\r\n]/g, '')
-		.replace(/\s+/g, ' ')
-		.trim()
-	if (!lower || lower.length > 80) return []
-	const compact = lower.replace(/[^a-z0-9\u0400-\u04FF]/gi, '')
-	const words = lower.split(/\s+/).filter(w => w.length >= 2)
-	const ordered = []
-	const add = s => {
-		if (s && !ordered.includes(s)) ordered.push(s)
-	}
-	add(lower)
-	if (compact !== lower && compact.length >= 2) add(compact)
-	if (words.length > 1) {
-		add(words.join('-'))
-		add(words[0])
-		const last = words[words.length - 1]
-		if (last && last !== words[0] && last.length >= 3) add(last)
-	}
-	return ordered.slice(0, 8)
-}
-/** Реестр App Paths: подбор .exe по подстроке имени (winscp → WinSCP.exe) */
-async function findExeInAppPathsRegistry(seed) {
-	const ql = (seed || '')
-		.trim()
-		.toLowerCase()
-		.replace(/\.exe$/i, '')
-		.replace(/['"`\r\n]/g, '')
-	if (!ql || ql.length > 80) return null
-	const script = `$ErrorActionPreference='SilentlyContinue'; $q=${JSON.stringify(ql)}; Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like '*.exe' -and $_.PSChildName.ToLower().Contains($q) } | Select-Object -First 24 | ForEach-Object { $p=(Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).'(default)'; if ($p -and (Test-Path -LiteralPath $p)) { $p } } | Select-Object -First 1`
-	try {
-		const { stdout } = await execAsync(
-			`powershell -NoProfile -Command ${JSON.stringify(script)}`,
-			{ windowsHide: true, maxBuffer: 1024 * 1024, timeout: 20000 },
-		)
-		const line = stdout
-			.trim()
-			.split(/\r?\n/)
-			.map(l => l.trim())
-			.find(l => /\.(exe|com|bat|cmd)$/i.test(l) && fs.existsSync(l))
-		return line || null
-	} catch (_) {
-		return null
-	}
-}
-/** Ярлыки в меню «Пуск»: имя ярлыка содержит запрос (в т.ч. «OBS Studio.lnk» по подстроке с пробелом или без) */
-async function findExeFromStartMenuShortcuts(seed) {
-	const ql = (seed || '')
-		.trim()
-		.toLowerCase()
-		.replace(/\.exe$/i, '')
-		.replace(/['"`\r\n]/g, '')
-		.replace(/\s+/g, ' ')
-		.trim()
-	const qc = ql.replace(/[^a-z0-9\u0400-\u04FF]/gi, '')
-	if ((!ql || ql.length < 2) && (!qc || qc.length < 2)) return null
-	if (ql.length > 80) return null
-	const script = `$ErrorActionPreference='SilentlyContinue'; $ql=${JSON.stringify(ql)}; $qc=${JSON.stringify(qc)}; $sh=New-Object -ComObject WScript.Shell; foreach ($sd in @("$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs","$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs")) { if (-not (Test-Path -LiteralPath $sd)) { continue }; $lnk = Get-ChildItem -LiteralPath $sd -Filter *.lnk -Recurse -ErrorAction SilentlyContinue | Where-Object { $low=$_.Name.ToLower(); $nf=$low.Replace(' ','').Replace('-','').Replace('_',''); ($ql.Length -ge 2 -and $low.Contains($ql)) -or ($qc.Length -ge 2 -and $nf.Contains($qc)) } | Select-Object -First 1; if ($lnk) { $t=$sh.CreateShortcut($lnk.FullName).TargetPath; if ($t -match '\\.(exe|com|bat|cmd)$' -and (Test-Path -LiteralPath $t)) { $t; break } } }`
-	try {
-		const { stdout } = await execAsync(
-			`powershell -NoProfile -Command ${JSON.stringify(script)}`,
-			{ windowsHide: true, maxBuffer: 1024 * 1024, timeout: 25000 },
-		)
-		const line = stdout
-			.trim()
-			.split(/\r?\n/)
-			.map(l => l.trim())
-			.find(l => /\.(exe|com|bat|cmd)$/i.test(l) && fs.existsSync(l))
-		return line || null
-	} catch (_) {
-		return null
-	}
-}
-/** Подпапки Program Files с именем, похожим на запрос (в т.ч. папка «OBS Studio» по подстроке с пробелом или компактно obsstudio) */
-async function findExeInTopProgramFolders(seed) {
-	const raw = String(seed || '')
-		.trim()
-		.replace(/\.exe$/i, '')
-	const ql = raw
-		.toLowerCase()
-		.replace(/['"`\r\n]/g, '')
-		.replace(/\s+/g, ' ')
-		.trim()
-	const qc = ql.replace(/[^a-z0-9\u0400-\u04FF]/gi, '')
-	const qLegacy = raw.replace(/[^a-zA-Z0-9\u0400-\u04FF]/gi, '').toLowerCase()
-	if (
-		(!ql || ql.length < 2) &&
-		(!qc || qc.length < 2) &&
-		(!qLegacy || qLegacy.length < 2)
-	)
-		return null
-	if (ql.length > 80 || qc.length > 80 || (qLegacy && qLegacy.length > 48))
-		return null
-	const roots = [
-		process.env['ProgramFiles(x86)'],
-		process.env.ProgramFiles,
-		path.join(os.homedir(), 'AppData', 'Local', 'Programs'),
-	].filter(Boolean)
-	const script = `$ErrorActionPreference='SilentlyContinue'; $ql=${JSON.stringify(ql)}; $qc=${JSON.stringify(qc)}; $qLegacy=${JSON.stringify(qLegacy)}; $roots=@(${roots.map(r => JSON.stringify(r)).join(',')}); foreach ($root in $roots) { if (-not (Test-Path -LiteralPath $root)) { continue }; $dirs = Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object { $n=$_.Name.ToLower(); $nn=$n.Replace(' ','').Replace('-','').Replace('_',''); ($ql.Length -ge 2 -and $n.Contains($ql)) -or ($qc.Length -ge 2 -and $nn.Contains($qc)) -or ($qLegacy.Length -ge 2 -and $n.Contains($qLegacy)) }; foreach ($d in $dirs) { $exe = Get-ChildItem -LiteralPath $d.FullName -Filter *.exe -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1; if ($exe -and (Test-Path -LiteralPath $exe.FullName)) { $exe.FullName; break } } }`
-	try {
-		const { stdout } = await execAsync(
-			`powershell -NoProfile -Command ${JSON.stringify(script)}`,
-			{ windowsHide: true, maxBuffer: 1024 * 1024, timeout: 20000 },
-		)
-		const line = stdout
-			.trim()
-			.split(/\r?\n/)
-			.map(l => l.trim())
-			.find(l => l.endsWith('.exe') && fs.existsSync(l))
-		return line || null
-	} catch (_) {
-		return null
-	}
-}
-async function findExecutableOnWindowsLoose(seed) {
-	let seeds = expandWindowsExeSearchSeeds(seed)
-	if (!seeds.length) {
-		const fb = String(seed || '')
-			.trim()
-			.toLowerCase()
-			.replace(/\.exe$/i, '')
-			.replace(/['"`\r\n]/g, '')
-			.trim()
-		if (fb.length >= 2 && fb.length <= 80) seeds = [fb]
-	}
-	for (const s of seeds) {
-		const a = await findExeInAppPathsRegistry(s)
-		if (a) return a
-	}
-	for (const s of seeds) {
-		const b = await findExeFromStartMenuShortcuts(s)
-		if (b) return b
-	}
-	for (const s of seeds) {
-		const c = await findExeInTopProgramFolders(s)
-		if (c) return c
-	}
-	return null
-}
-async function openWindowsAppOrPath(appName) {
-	let targetPath = expandWindowsEnvPath(appName)
-	const shellApi = electron_1.shell
-	// explorer "путь" — отдельно (проводник с аргументом)
-	const ex = targetPath.match(/^(?:explorer|explorer\.exe)\s+(.+)$/i)
-	if (ex) {
-		const inner = expandWindowsEnvPath(ex[1].replace(/^["']|["']$/g, ''))
-		if (inner && fs.existsSync(inner)) {
-			;(0, child_process_1.spawn)('explorer.exe', [inner], {
-				detached: true,
-				stdio: 'ignore',
-			})
-			return { success: true, message: `Папка открыта в проводнике` }
-		}
-	}
-	// URI-схемы (ms-settings:, mailto:, spotify: и т.д.) — не путём к диску
-	if (
-		/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(targetPath) &&
-		!/^[a-zA-Z]:\\/.test(targetPath)
-	) {
-		await shellApi.openExternal(targetPath)
-		return { success: true, message: `Открыто` }
-	}
-	const normalized = targetPath.replace(/\//g, '\\')
-	if (fs.existsSync(normalized)) {
-		const err = await shellApi.openPath(normalized)
-		if (!err)
-			return { success: true, message: `Открыто: ${path.basename(normalized)}` }
-	}
-	const resolved = resolveWindowsAppQuery(targetPath)
-	const fromPath = await tryWhereExecutable(resolved)
-	if (fromPath) {
-		await execFileAsync('cmd.exe', ['/c', 'start', '', fromPath], {
-			windowsHide: true,
-		})
-		return { success: true, message: `Запущено: ${path.basename(fromPath)}` }
-	}
-	let loosePath = await findExecutableOnWindowsLoose(resolved)
-	if (!loosePath && resolved !== targetPath.trim()) {
-		loosePath = await findExecutableOnWindowsLoose(targetPath.trim())
-	}
-	if (loosePath) {
-		await execFileAsync('cmd.exe', ['/c', 'start', '', loosePath], {
-			windowsHide: true,
-		})
-		return { success: true, message: `Запущено: ${path.basename(loosePath)}` }
-	}
-	const looksLikeFsPath = s =>
-		/[\\/]/.test(s) || /^\\\\/.test(s) || /\.(exe|com|bat|cmd|msc)$/i.test(s)
-	try {
-		await execFileAsync('cmd.exe', ['/c', 'start', '', resolved], {
-			windowsHide: true,
-		})
-		return { success: true, message: `Запущено: ${resolved}` }
-	} catch (e1) {
-		if (looksLikeFsPath(resolved)) {
-			try {
-				const esc = String(resolved).replace(/'/g, "''")
-				await execFileAsync(
-					'powershell.exe',
-					['-NoProfile', '-Command', `Start-Process -LiteralPath '${esc}'`],
-					{ windowsHide: true },
-				)
-				return { success: true, message: `Запущено: ${resolved}` }
-			} catch (e2) {
-				return {
-					error: `Не удалось открыть «${appName}»: ${e2.message || e1.message}`,
-				}
-			}
-		}
-		return {
-			error: `Не удалось найти приложение «${appName}». Проверьте, что оно установлено, или укажите полный путь к .exe.`,
+			if (typeof platform[fn] === 'function') return await platform[fn](...args)
+			return fallback ? fallback() : { error: 'Функция не поддерживается' }
+		} catch (error) {
+			console.error('platform.' + fn + ':', error)
+			return { error: error.message || String(error) }
 		}
 	}
 }
-// Advanced System Control handlers
-electron_1.ipcMain.handle('system-open-app', async (event, appName) => {
-	try {
-		if (process.platform === 'darwin') {
-			const target = normalizeAppNameFromIpc(appName)
-			if (
-				path.isAbsolute(target) ||
-				target.startsWith('.') ||
-				target.includes('/')
-			) {
-				const resolved = path.resolve(target)
-				if (fs.existsSync(resolved)) {
-					await execAsync(`open "${resolved.replace(/"/g, '\\"')}"`)
-					return {
-						success: true,
-						message: `Открыто: ${path.basename(resolved)}`,
-					}
-				}
-			}
-			await execAsync(`open -a "${target.replace(/"/g, '\\"')}"`)
-			return { success: true, message: `Приложение "${target}" открыто` }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		return await openWindowsAppOrPath(normalizeAppNameFromIpc(appName))
-	} catch (error) {
-		console.error('Open app error:', error)
-		if (process.platform === 'darwin') {
-			return { error: `Не удалось открыть "${appName}": ${error.message}` }
-		}
-		return { error: `Не удалось открыть "${appName}": ${error.message}` }
-	}
-})
-electron_1.ipcMain.handle('system-launch-file', async (event, filePath) => {
-	try {
-		const expanded = expandWindowsEnvPath(filePath)
-		if (process.platform === 'darwin') {
-			await execAsync(`open "${expanded.replace(/"/g, '\\"')}"`)
-			return { success: true, message: `Открыто` }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		if (!expanded) {
-			return { error: 'Пустой путь' }
-		}
-		const err = await electron_1.shell.openPath(expanded.replace(/\//g, '\\'))
-		if (err) return { error: err }
-		return { success: true, message: `Открыто: ${path.basename(expanded)}` }
-	} catch (error) {
-		console.error('Launch file error:', error)
-		return { error: `Не удалось открыть: ${error.message}` }
-	}
-})
-/** Открыть папку по имени или пути: короткое имя ищем на Рабочем столе (в т.ч. OneDrive\Desktop), в Документах, Загрузках */
-electron_1.ipcMain.handle('system-open-folder-smart', async (event, raw) => {
-	try {
-		const rawInput = (raw || '').trim()
-		if (!rawInput) {
-			return { error: 'Пустое имя папки' }
-		}
-		if (process.platform === 'darwin') {
-			const tryPath = path.join(os.homedir(), 'Desktop', rawInput)
-			if (fs.existsSync(tryPath) && fs.statSync(tryPath).isDirectory()) {
-				const err = await electron_1.shell.openPath(tryPath)
-				if (!err) return { success: true, message: `Открыто: ${tryPath}` }
-				return { error: err }
-			}
-			const err = await electron_1.shell.openPath(tryPath)
-			if (!err) return { success: true, message: tryPath }
-			return { error: err || `Папка «${rawInput}» не найдена на рабочем столе` }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const expanded = expandWindowsEnvPath(rawInput.replace(/\//g, '\\'))
-		const looksLikeFullPath =
-			/^[a-zA-Z]:\\/.test(expanded) ||
-			/^\\\\/.test(expanded) ||
-			/^%[^%]+%\\/.test(expanded)
-		if (looksLikeFullPath) {
-			const err = await electron_1.shell.openPath(expanded)
-			if (!err) return { success: true, message: `Открыто: ${expanded}` }
-			return { error: err }
-		}
-		const simple = expanded.replace(/^["']|["']$/g, '').replace(/[\\\/]+$/, '')
-		if (!simple || simple.includes('\\') || simple.includes('/')) {
-			const err = await electron_1.shell.openPath(expanded)
-			if (!err) return { success: true, message: expanded }
-			return { error: err }
-		}
-		const home = os.homedir()
-		const candidates = []
-		const push = p => {
-			if (p && !candidates.includes(p)) candidates.push(p)
-		}
-		push(path.join(home, 'Desktop', simple))
-		push(path.join(home, 'OneDrive', 'Desktop', simple))
-		const oneDrive = process.env.OneDrive
-		if (oneDrive) push(path.join(oneDrive, 'Desktop', simple))
-		push(path.join(home, 'Documents', simple))
-		push(path.join(home, 'Downloads', simple))
-		const pub = process.env.PUBLIC
-		if (pub) push(path.join(pub, 'Desktop', simple))
-		for (const p of candidates) {
-			try {
-				if (fs.existsSync(p) && fs.statSync(p).isDirectory()) {
-					const err = await electron_1.shell.openPath(p)
-					if (!err) return { success: true, message: `Открыто: ${p}` }
-				}
-			} catch (_) {
-				/* ignore */
-			}
-		}
-		return {
-			error: `Папка «${rawInput}» не найдена (искали на Рабочем столе, OneDrive Desktop, в Документах и Загрузках).`,
-		}
-	} catch (error) {
-		console.error('system-open-folder-smart:', error)
-		return { error: error.message || 'Неизвестная ошибка' }
-	}
-})
-electron_1.ipcMain.handle('system-exec-powershell', async (event, command) => {
-	try {
-		if (process.platform === 'darwin') {
-			const escaped = command.replace(/"/g, '\\"')
-			const { stdout, stderr } = await execAsync(`/bin/zsh -c "${escaped}"`, {
-				timeout: 60000,
-			})
-			return {
-				success: true,
-				output: (stdout || stderr || 'Команда выполнена').trim(),
-				message: 'Команда выполнена успешно',
-			}
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const fullCommand = `powershell -Command "${command.replace(/"/g, '\\"')}"`
-		const { stdout, stderr } = await execAsync(fullCommand)
-		return {
-			success: true,
-			output: stdout || stderr || 'Команда выполнена',
-			message: 'Команда выполнена успешно',
-		}
-	} catch (error) {
-		console.error('PowerShell exec error:', error)
-		return { error: `Ошибка выполнения команды: ${error.message}` }
-	}
-})
 
-// Installed browsers (for Settings dropdown)
+electron_1.ipcMain.handle('system-open-app', platformCall('openApp'))
+electron_1.ipcMain.handle('system-launch-file', platformCall('openFile'))
+electron_1.ipcMain.handle('system-open-folder-smart', platformCall('openFolderSmart'))
+electron_1.ipcMain.handle('system-close-app', platformCall('closeApp'))
+electron_1.ipcMain.handle('system-minimize-app', platformCall('minimizeApp'))
+electron_1.ipcMain.handle('get-installed-apps', platformCall('listInstalledApps', async () => ({ success: true, apps: [] })))
+electron_1.ipcMain.handle('system-exec-powershell', platformCall('execShell'))
 electron_1.ipcMain.handle('get-installed-browsers', async () => {
-	const list =
-		process.platform === 'darwin'
-			? await getInstalledBrowsersMac()
-			: await getInstalledBrowsersWin()
+	const list = await platform.listBrowsers()
 	return { success: true, browsers: list }
 })
-electron_1.ipcMain.handle(
-	'system-maximize-window',
-	async (event, windowTitle) => {
-		try {
-			if (process.platform === 'darwin') {
-				const title = (windowTitle || '')
-					.replace(/\\/g, '\\\\')
-					.replace(/"/g, '\\"')
-				await runOsascript(
-					`tell application "System Events" to set frontmost of first process whose name contains "${title}" to true`,
-				)
-				await runOsascript(
-					'tell application "System Events" to keystroke "f" using {command down, control down}',
-				)
-				return { success: true, message: `Окно "${windowTitle}" развернуто` }
-			}
-			if (process.platform !== 'win32') {
-				return { error: 'Только для Windows' }
-			}
-			const command = `powershell -Command "$wshell = New-Object -ComObject wscript.shell; $wshell.AppActivate('${windowTitle}'); [System.Windows.Forms.SendKeys]::SendWait('%{ENTER}')"`
-			await execAsync(command)
-			return { success: true, message: `Окно "${windowTitle}" развернуто` }
-		} catch (error) {
-			console.error('Maximize window error:', error)
-			return { error: `Не удалось развернуть окно: ${error.message}` }
-		}
-	},
-)
-electron_1.ipcMain.handle(
-	'system-minimize-window',
-	async (event, windowTitle) => {
-		try {
-			if (process.platform === 'darwin') {
-				const title = (windowTitle || '')
-					.replace(/\\/g, '\\\\')
-					.replace(/"/g, '\\"')
-				await runOsascript(
-					`tell application "System Events" to set frontmost of first process whose name contains "${title}" to true`,
-				)
-				await runOsascript(
-					'tell application "System Events" to keystroke "m" using command down',
-				)
-				return { success: true, message: `Окно "${windowTitle}" свернуто` }
-			}
-			if (process.platform !== 'win32') {
-				return { error: 'Только для Windows' }
-			}
-			const command = `powershell -Command "$wshell = New-Object -ComObject wscript.shell; $wshell.AppActivate('${windowTitle}'); [System.Windows.Forms.SendKeys]::SendWait('{ESC}')"`
-			await execAsync(command)
-			return { success: true, message: `Окно "${windowTitle}" свернуто` }
-		} catch (error) {
-			console.error('Minimize window error:', error)
-			return { error: `Не удалось свернуть окно: ${error.message}` }
-		}
-	},
-)
-electron_1.ipcMain.handle('system-close-window', async (event, windowTitle) => {
-	try {
-		if (process.platform === 'darwin') {
-			const title = (windowTitle || '')
-				.replace(/\\/g, '\\\\')
-				.replace(/"/g, '\\"')
-			await runOsascript(
-				`tell application "System Events" to set frontmost of first process whose name contains "${title}" to true`,
-			)
-			await runOsascript(
-				'tell application "System Events" to keystroke "w" using command down',
-			)
-			return { success: true, message: `Окно "${windowTitle}" закрыто` }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const command = `powershell -Command "$wshell = New-Object -ComObject wscript.shell; $wshell.AppActivate('${windowTitle}'); Start-Sleep -Milliseconds 200; [System.Windows.Forms.SendKeys]::SendWait('%{F4}')"`
-		await execAsync(command)
-		return { success: true, message: `Окно "${windowTitle}" закрыто` }
-	} catch (error) {
-		console.error('Close window error:', error)
-		return { error: `Не удалось закрыть окно: ${error.message}` }
-	}
-})
+electron_1.ipcMain.handle('system-maximize-window', platformCall('maximizeWindow'))
+electron_1.ipcMain.handle('system-minimize-window', platformCall('minimizeWindow'))
+electron_1.ipcMain.handle('system-close-window', platformCall('closeWindow'))
 electron_1.ipcMain.handle('system-wait', async (event, milliseconds) => {
 	return new Promise(resolve => {
 		setTimeout(() => {
-			resolve({
-				success: true,
-				message: `Ожидание ${milliseconds}мс завершено`,
-			})
+			resolve({ success: true, message: `Ожидание ${milliseconds}мс завершено` })
 		}, milliseconds)
 	})
 })
-// Advanced Input Control handlers
-electron_1.ipcMain.handle('system-send-keys', async (event, keys) => {
-	try {
-		if (process.platform === 'darwin') {
-			const k = (keys || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-			await runOsascript(`tell application "System Events" to keystroke "${k}"`)
-			return { success: true, message: `Клавиши отправлены` }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const escapedKeys = keys.replace(/'/g, "''")
-		const command = `powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${escapedKeys}')"`
-		await execAsync(command)
-		return { success: true, message: `Клавиши "${keys}" отправлены` }
-	} catch (error) {
-		console.error('Send keys error:', error)
-		return { error: `Ошибка отправки клавиш: ${error.message}` }
-	}
-})
-electron_1.ipcMain.handle(
-	'system-click',
-	async (event, x, y, button = 'left') => {
-		try {
-			if (process.platform === 'darwin') {
-				if (button && button.toLowerCase() === 'right') {
-					await runOsascript(
-						`tell application "System Events" to click at {${x}, ${y}} with right click`,
-					)
-				} else {
-					await runOsascript(
-						`tell application "System Events" to click at {${x}, ${y}}`,
-					)
-				}
-				return { success: true, message: `Клик на (${x}, ${y})` }
-			}
-			if (process.platform !== 'win32') {
-				return { error: 'Только для Windows' }
-			}
-			const buttonDown = button.toLowerCase() === 'right' ? '0x0008' : '0x0002'
-			const buttonUp = button.toLowerCase() === 'right' ? '0x0010' : '0x0004'
-			const command = `powershell -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Mouse { [DllImport(\\\"user32.dll\\\")] public static extern bool SetCursorPos(int x, int y); [DllImport(\\\"user32.dll\\\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo); public static void Click(int x, int y, uint down, uint up) { SetCursorPos(x, y); mouse_event(down, 0, 0, 0, 0); mouse_event(up, 0, 0, 0, 0); } }'; [Mouse]::Click(${x}, ${y}, ${buttonDown}, ${buttonUp})"`
-			await execAsync(command)
-			return {
-				success: true,
-				message: `Клик ${button} кнопкой мыши на координатах (${x}, ${y})`,
-			}
-		} catch (error) {
-			console.error('Click error:', error)
-			return { error: `Ошибка клика: ${error.message}` }
-		}
-	},
+electron_1.ipcMain.handle('browser-open-url', platformCall('openUrl'))
+electron_1.ipcMain.handle('browser-search', platformCall('search'))
+electron_1.ipcMain.handle('browser-new-tab', platformCall('newTab'))
+electron_1.ipcMain.handle('browser-close-tab', platformCall('closeTab'))
+electron_1.ipcMain.handle('browser-refresh', platformCall('refresh'))
+electron_1.ipcMain.handle('browser-go-back', platformCall('goBack'))
+electron_1.ipcMain.handle('browser-go-forward', platformCall('goForward'))
+electron_1.ipcMain.handle('browser-get-url', platformCall('getUrl'))
+electron_1.ipcMain.handle('system-send-keys', platformCall('sendKeys'))
+electron_1.ipcMain.handle('system-click', (e, x, y, b) => platformCall('click')(x, y, b))
+electron_1.ipcMain.handle('system-mouse-down', (e, x, y, b) =>
+	platformCall('mouseDown')(x, y, b),
 )
-electron_1.ipcMain.handle(
-	'system-mouse-down',
-	async (event, x, y, button = 'left') => {
-		try {
-			if (process.platform === 'darwin') {
-				if (button && button.toLowerCase() === 'right') {
-					await runOsascript(
-						`tell application "System Events" to click at {${x}, ${y}} with right click`,
-					)
-				} else {
-					await runOsascript(
-						`tell application "System Events" to click at {${x}, ${y}}`,
-					)
-				}
-				return { success: true, message: `Клик на (${x}, ${y})` }
-			}
-			if (process.platform !== 'win32') {
-				return { error: 'Только для Windows' }
-			}
-			const buttonCode = button.toLowerCase() === 'right' ? '0x0008' : '0x0002'
-			const command = `powershell -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Mouse { [DllImport(\\\"user32.dll\\\")] public static extern bool SetCursorPos(int x, int y); [DllImport(\\\"user32.dll\\\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo); }'; [Mouse]::SetCursorPos(${x}, ${y}); [Mouse]::mouse_event(${buttonCode}, 0, 0, 0, 0)"`
-			await execAsync(command)
-			return {
-				success: true,
-				message: `Зажата ${button} кнопка мыши на (${x}, ${y})`,
-			}
-		} catch (error) {
-			console.error('Mouse down error:', error)
-			return { error: `Ошибка зажатия кнопки: ${error.message}` }
-		}
-	},
+electron_1.ipcMain.handle('system-mouse-up', (e, b) => platformCall('mouseUp')(b))
+electron_1.ipcMain.handle('system-move-mouse', (e, x, y) => platformCall('moveMouse')(x, y))
+electron_1.ipcMain.handle('system-scroll', (e, x, y, d, dir) =>
+	platformCall('scroll')(x, y, d, dir),
 )
-electron_1.ipcMain.handle('system-mouse-up', async (event, button = 'left') => {
-	try {
-		if (process.platform === 'darwin') {
-			return { success: true, message: 'Кнопка мыши отпущена' }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const buttonCode = button.toLowerCase() === 'right' ? '0x0010' : '0x0004'
-		const command = `powershell -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Mouse { [DllImport(\\\"user32.dll\\\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo); }'; [Mouse]::mouse_event(${buttonCode}, 0, 0, 0, 0)"`
-		await execAsync(command)
-		return { success: true, message: `Отпущена ${button} кнопка мыши` }
-	} catch (error) {
-		console.error('Mouse up error:', error)
-		return { error: `Ошибка отпускания кнопки: ${error.message}` }
-	}
-})
-electron_1.ipcMain.handle('system-move-mouse', async (event, x, y) => {
-	try {
-		if (process.platform === 'darwin') {
-			await runOsascript(
-				`tell application "System Events" to click at {${x}, ${y}}`,
-			)
-			return {
-				success: true,
-				message: `Курсор перемещён и клик на (${x}, ${y})`,
-			}
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const command = `powershell -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Mouse { [DllImport(\\\"user32.dll\\\")] public static extern bool SetCursorPos(int x, int y); }'; [Mouse]::SetCursorPos(${x}, ${y})"`
-		await execAsync(command)
-		return { success: true, message: `Курсор перемещен на (${x}, ${y})` }
-	} catch (error) {
-		console.error('Move mouse error:', error)
-		return { error: `Ошибка перемещения курсора: ${error.message}` }
-	}
-})
-electron_1.ipcMain.handle(
-	'system-scroll',
-	async (event, x, y, delta, direction = 'down') => {
-		try {
-			if (process.platform === 'darwin') {
-				const times = Math.min(20, Math.max(1, Math.abs(delta || 1)))
-				const keyCode = direction.toLowerCase() === 'up' ? 107 : 108
-				for (let i = 0; i < times; i++) {
-					await runOsascript(
-						`tell application "System Events" to key code ${keyCode}`,
-					)
-				}
-				return { success: true, message: `Прокрутка ${direction}` }
-			}
-			if (process.platform !== 'win32') {
-				return { error: 'Только для Windows' }
-			}
-			const scrollDelta =
-				direction.toLowerCase() === 'up' ? -Math.abs(delta) : Math.abs(delta)
-			const command = `powershell -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Mouse { [DllImport(\\\"user32.dll\\\")] public static extern bool SetCursorPos(int x, int y); [DllImport(\\\"user32.dll\\\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo); }'; [Mouse]::SetCursorPos(${x}, ${y}); [Mouse]::mouse_event(0x0800, 0, 0, ${scrollDelta * 120}, 0)"`
-			await execAsync(command)
-			return {
-				success: true,
-				message: `Прокрутка ${direction} на ${Math.abs(delta)} единиц на (${x}, ${y})`,
-			}
-		} catch (error) {
-			console.error('Scroll error:', error)
-			return { error: `Ошибка прокрутки: ${error.message}` }
-		}
-	},
+electron_1.ipcMain.handle('system-double-click', (e, x, y) =>
+	platformCall('doubleClick')(x, y),
 )
-electron_1.ipcMain.handle('system-double-click', async (event, x, y) => {
-	try {
-		if (process.platform === 'darwin') {
-			await runOsascript(
-				`tell application "System Events" to click at {${x}, ${y}}`,
-			)
-			await runOsascript('delay 0.05')
-			await runOsascript(
-				`tell application "System Events" to click at {${x}, ${y}}`,
-			)
-			return { success: true, message: `Двойной клик на (${x}, ${y})` }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const command = `powershell -Command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Mouse { [DllImport(\\\"user32.dll\\\")] public static extern bool SetCursorPos(int x, int y); [DllImport(\\\"user32.dll\\\")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo); }'; [Mouse]::SetCursorPos(${x}, ${y}); [Mouse]::mouse_event(0x0002, 0, 0, 0, 0); [Mouse]::mouse_event(0x0004, 0, 0, 0, 0); Start-Sleep -Milliseconds 50; [Mouse]::mouse_event(0x0002, 0, 0, 0, 0); [Mouse]::mouse_event(0x0004, 0, 0, 0, 0)"`
-		await execAsync(command)
-		return { success: true, message: `Двойной клик на (${x}, ${y})` }
-	} catch (error) {
-		console.error('Double click error:', error)
-		return { error: `Ошибка двойного клика: ${error.message}` }
-	}
-})
-electron_1.ipcMain.handle('system-get-screen-size', async () => {
-	try {
-		if (process.platform === 'darwin') {
-			const primary = electron_1.screen.getPrimaryDisplay()
-			const bounds = primary.size || primary.bounds
-			return { success: true, width: bounds.width, height: bounds.height }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const command = `powershell -Command "[System.Windows.Forms.Screen]::PrimaryScreen.Bounds"`
-		const { stdout } = await execAsync(command)
-		// Парсим размер экрана из вывода PowerShell
-		const widthMatch = stdout.match(/Width\s*:\s*(\d+)/)
-		const heightMatch = stdout.match(/Height\s*:\s*(\d+)/)
-		if (widthMatch && heightMatch) {
-			return {
-				success: true,
-				width: parseInt(widthMatch[1]),
-				height: parseInt(heightMatch[1]),
-			}
-		}
-		// Альтернативный способ
-		const altCommand = `powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::PrimaryScreen.Bounds"`
-		const { stdout: altStdout } = await execAsync(altCommand)
-		return { success: true, output: altStdout }
-	} catch (error) {
-		console.error('Get screen size error:', error)
-		return { error: `Ошибка получения размера экрана: ${error.message}` }
-	}
-})
-// Browser Control handlers
-electron_1.ipcMain.handle('browser-open-url', async (event, url, browser) => {
-	try {
-		if (process.platform === 'darwin') {
-			return await openExternalUrl(url)
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const browserMap = {
-			chrome: 'chrome',
-			edge: 'msedge',
-			firefox: 'firefox',
-			opera: 'opera',
-			yandex: 'browser',
-			brave: 'brave',
-		}
-		const browserName = browser
-			? browserMap[browser.toLowerCase()] || browser
-			: null
-		// Если браузер не указан — используем самый надежный способ
-		if (!browserName) {
-			return await openExternalUrl(url)
-		}
-		// Если указан — пытаемся через Start-Process, а при ошибке падаем обратно на openExternal
-		const command = `powershell -Command "Start-Process '${browserName}' -ArgumentList '${url.replace(/'/g, "''")}'"`
-		await execAsync(command)
-		return { success: true, message: `URL "${url}" открыт в ${browser}` }
-	} catch (error) {
-		console.error('Browser open URL error:', error)
-		// Фоллбек
-		return await openExternalUrl(url)
-	}
-})
-electron_1.ipcMain.handle('browser-search', async (event, query, browser) => {
-	try {
-		if (process.platform === 'darwin') {
-			const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`
-			return await openExternalUrl(searchUrl)
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`
-		const browserMap = {
-			chrome: 'chrome',
-			edge: 'msedge',
-			firefox: 'firefox',
-			opera: 'opera',
-			yandex: 'browser',
-			brave: 'brave',
-		}
-		const browserName = browser
-			? browserMap[browser.toLowerCase()] || browser
-			: null
-		if (!browserName) {
-			const r = await openExternalUrl(searchUrl)
-			return r.success
-				? { success: true, message: `Поиск "${query}" открыт` }
-				: r
-		}
-		const command = `powershell -Command "Start-Process '${browserName}' -ArgumentList '${searchUrl.replace(/'/g, "''")}'"`
-		await execAsync(command)
-		return { success: true, message: `Поиск "${query}" открыт в ${browser}` }
-	} catch (error) {
-		console.error('Browser search error:', error)
-		return await openExternalUrl(
-			`https://www.google.com/search?q=${encodeURIComponent(query)}`,
-		)
-	}
-})
-electron_1.ipcMain.handle('browser-new-tab', async (event, url, browser) => {
-	try {
-		if (process.platform === 'darwin') {
-			const targetUrl = url || 'https://'
-			return await openExternalUrl(targetUrl)
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const targetUrl = url || 'about:blank'
-		const browserMap = {
-			chrome: 'chrome',
-			edge: 'msedge',
-			firefox: 'firefox',
-			opera: 'opera',
-			yandex: 'browser',
-			brave: 'brave',
-		}
-		const browserName = browser
-			? browserMap[browser.toLowerCase()] || browser
-			: null
-		if (!browserName) {
-			return await openExternalUrl(targetUrl)
-		}
-		const command = `powershell -Command "Start-Process '${browserName}' -ArgumentList '${targetUrl.replace(/'/g, "''")}'"`
-		await execAsync(command)
-		return {
-			success: true,
-			message: `Новая вкладка открыта${url ? ` с ${url}` : ''} в ${browser}`,
-		}
-	} catch (error) {
-		console.error('Browser new tab error:', error)
-		return await openExternalUrl(url || 'about:blank')
-	}
-})
-electron_1.ipcMain.handle('browser-close-tab', async (event, browser) => {
-	try {
-		if (process.platform === 'darwin') {
-			await runOsascript(
-				'tell application "System Events" to keystroke "w" using command down',
-			)
-			return { success: true, message: 'Вкладка закрыта' }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const command = `powershell -Command "[System.Windows.Forms.SendKeys]::SendWait('^w')"`
-		await execAsync(command)
-		return {
-			success: true,
-			message: `Вкладка закрыта${browser ? ` в ${browser}` : ''}`,
-		}
-	} catch (error) {
-		console.error('Browser close tab error:', error)
-		return { error: `Не удалось закрыть вкладку: ${error.message}` }
-	}
-})
-electron_1.ipcMain.handle('browser-refresh', async (event, browser) => {
-	try {
-		if (process.platform === 'darwin') {
-			await runOsascript(
-				'tell application "System Events" to keystroke "r" using command down',
-			)
-			return { success: true, message: 'Страница обновлена' }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const command = `powershell -Command "[System.Windows.Forms.SendKeys]::SendWait('{F5}')"`
-		await execAsync(command)
-		return {
-			success: true,
-			message: `Страница обновлена${browser ? ` в ${browser}` : ''}`,
-		}
-	} catch (error) {
-		console.error('Browser refresh error:', error)
-		return { error: `Не удалось обновить страницу: ${error.message}` }
-	}
-})
-electron_1.ipcMain.handle('browser-go-back', async (event, browser) => {
-	try {
-		if (process.platform === 'darwin') {
-			await runOsascript(
-				'tell application "System Events" to keystroke "[" using command down',
-			)
-			return { success: true, message: 'Навигация назад' }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const command = `powershell -Command "[System.Windows.Forms.SendKeys]::SendWait('%{LEFT}')"`
-		await execAsync(command)
-		return {
-			success: true,
-			message: `Навигация назад${browser ? ` в ${browser}` : ''}`,
-		}
-	} catch (error) {
-		console.error('Browser go back error:', error)
-		return { error: `Не удалось вернуться назад: ${error.message}` }
-	}
-})
-electron_1.ipcMain.handle('browser-go-forward', async (event, browser) => {
-	try {
-		if (process.platform === 'darwin') {
-			await runOsascript(
-				'tell application "System Events" to keystroke "]" using command down',
-			)
-			return { success: true, message: 'Навигация вперед' }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const command = `powershell -Command "[System.Windows.Forms.SendKeys]::SendWait('%{RIGHT}')"`
-		await execAsync(command)
-		return {
-			success: true,
-			message: `Навигация вперед${browser ? ` в ${browser}` : ''}`,
-		}
-	} catch (error) {
-		console.error('Browser go forward error:', error)
-		return { error: `Не удалось перейти вперед: ${error.message}` }
-	}
-})
-electron_1.ipcMain.handle('browser-get-url', async (event, browser) => {
-	try {
-		if (process.platform === 'darwin') {
-			await runOsascript(
-				'tell application "System Events" to keystroke "l" using command down',
-			)
-			await new Promise(r => setTimeout(r, 150))
-			await runOsascript(
-				'tell application "System Events" to keystroke "c" using command down',
-			)
-			await new Promise(r => setTimeout(r, 50))
-			const { stdout } = await execAsync("osascript -e 'the clipboard'")
-			const url = (stdout || '').trim()
-			return { success: true, url: url || 'URL скопирован в буфер обмена' }
-		}
-		if (process.platform !== 'win32') {
-			return { error: 'Только для Windows' }
-		}
-		const command = `powershell -Command "[System.Windows.Forms.SendKeys]::SendWait('^l'); Start-Sleep -Milliseconds 100; [System.Windows.Forms.SendKeys]::SendWait('^c')"`
-		await execAsync(command)
-		return { success: true, url: 'URL скопирован в буфер обмена' }
-	} catch (error) {
-		console.error('Browser get URL error:', error)
-		return { error: `Не удалось получить URL: ${error.message}` }
-	}
-})
+electron_1.ipcMain.handle('system-get-screen-size', platformCall('getScreenSize'))
 
-// IPC обработчик: получить информацию о текущем пользователе
 electron_1.ipcMain.handle('get-current-user-info', async () => {
 	try {
 		if (mainWindow && !mainWindow.isDestroyed()) {

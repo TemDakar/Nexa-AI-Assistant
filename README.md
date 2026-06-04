@@ -2,7 +2,7 @@
 
 # Nexa Assistant
 
-**Локальный голосовой AI-ассистент для macOS и Windows**
+**Локальный голосовой AI-ассистент для macOS, Windows и Linux**
 
 Чат, команды, управление системой и браузером, Telegram MTProto — без облака в ядре приложения.
 
@@ -11,14 +11,16 @@
 [![Electron](https://img.shields.io/badge/Electron-28-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![Vue](https://img.shields.io/badge/UI-Vue-4FC08D?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
 [![Node](https://img.shields.io/badge/Node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-0078D4?logo=windows&logoColor=white)]()
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-FCC624?logo=linux&logoColor=black)]()
 [![Whisper](https://img.shields.io/badge/Speech-faster--whisper-FF6F00)]()
+[![Telegram](https://img.shields.io/badge/Telegram-@Nexa__Assistant-26A5E4?logo=telegram&logoColor=white)](https://t.me/Nexa_Assistant)
 
 [Быстрый старт](#-быстрый-старт) ·
 [Возможности](#-возможности) ·
 [Голос](#-распознавание-голоса) ·
 [Сборка](#-сборка-установщика) ·
 [Структура](#-структура-проекта) ·
+[Telegram @Nexa_Assistant](https://t.me/Nexa_Assistant) ·
 [Лицензия](LICENSE.txt)
 
 </div>
@@ -28,6 +30,8 @@
 ## О проекте
 
 **Nexa** — десктопное приложение на **Electron** и **Vue**: ассистент работает на вашем компьютере, распознаёт речь через **Whisper** (`faster-whisper`), выполняет системные сценарии и интегрируется с **Telegram** (MTProto). Обновления доставляются через **GitHub Releases** (`electron-updater`).
+
+Новости и обсуждения: [Telegram-канал @Nexa_Assistant](https://t.me/Nexa_Assistant)
 
 > Подходит для разработки, форков и сборки своего билда. Голосовой движок и модели скачиваются при первой настройке — репозиторий остаётся компактным.
 
@@ -39,7 +43,8 @@
 |---|---|
 | 🎙️ **Голос** | Push-to-talk, локальный Whisper, конвертация WebM → WAV через ffmpeg |
 | 💬 **Чат и команды** | Текстовый интерфейс и выполнение сценариев из UI |
-| 🖥️ **Система** | Громкость, запуск приложений, окна, мышь/клавиатура (macOS / Windows) |
+| 🖥️ **Система** | Громкость, **запуск любых приложений по имени** (без команд), окна, мышь/клавиатура |
+| 📂 **Умный запуск** | Отдельные модули: `apps-darwin.js`, `apps-win32.js`, `apps-linux.js` |
 | 🌐 **Браузер** | Открытие URL, вкладки, поиск — Chrome, Edge, Firefox и др. |
 | ✈️ **Telegram** | Вход по коду, отправка и чтение сообщений через MTProto |
 | 🔄 **Обновления** | Проверка и установка релизов с GitHub |
@@ -71,34 +76,17 @@ npm install --prefix vue
 
 ### 2. Запуск без сборки
 
-<table>
-<tr>
-<th>macOS</th>
-<th>Windows</th>
-</tr>
-<tr>
-<td>
+| macOS | Windows | Linux |
+|-------|---------|-------|
+| `npm start` или `npm run start:mac` в Cursor | `npm start` | `npm start` |
 
 ```bash
-npm start
-```
-
-В Cursor / VS Code, если задан `ELECTRON_RUN_AS_NODE`:
-
-```bash
+# macOS (если ELECTRON_RUN_AS_NODE в IDE)
 npm run start:mac
-```
 
-</td>
-<td>
-
-```powershell
+# Windows / Linux
 npm start
 ```
-
-</td>
-</tr>
-</table>
 
 Сборка установщика **не нужна** — используются готовые `dist/` и `renderer/`.
 
@@ -112,6 +100,7 @@ npm run setup:voice
 |-----------|--------|
 | **macOS** | `brew install ffmpeg` |
 | **Windows** | `winget install Gyan.FFmpeg` |
+| **Linux** | `sudo apt install ffmpeg` (или аналог для вашего дистрибутива) |
 
 Подробнее: [`resources/ffmpeg/README.md`](resources/ffmpeg/README.md)
 
@@ -124,7 +113,8 @@ npm run setup:voice
 | ОС | Рантайм |
 |----|---------|
 | **macOS** | Python + `whisper_recognition.py` |
-| **Windows** | Собранный `whisper_recognition.exe` **или** тот же Python-сценарий из venv |
+| **Windows** | Собранный `whisper_recognition.exe` **или** Python из venv |
+| **Linux** | Python + `whisper_recognition.py` (как на macOS) |
 
 ```mermaid
 flowchart LR
@@ -147,7 +137,8 @@ npm run build    # Vue UI, если есть vue/; иначе — готовый
 |---------|-----------|
 | `npm run dist:mac` | DMG / ZIP для macOS |
 | `npm run dist:win` | NSIS-установщик Windows x64 |
-| `npm run dist` | Оба таргета (на CI или соответствующей ОС) |
+| `npm run dist:linux` | AppImage и deb для Linux |
+| `npm run dist` | win + mac + linux (собирайте на нужной ОС или в CI) |
 
 Публикация в GitHub Releases:
 
@@ -183,6 +174,7 @@ npm run dist:publish
 ```text
 nexa_assistant/
 ├── dist/                    # Main / preload (Electron)
+│   └── platform/            # darwin.js | win32.js | linux.js (+ audio/browser/windows/input)
 ├── renderer/                # Собранный Vue UI
 ├── vue/                     # Исходники UI (опционально)
 ├── resources/
@@ -190,7 +182,7 @@ nexa_assistant/
 │   ├── ffmpeg/              # Локальный ffmpeg (опционально)
 │   └── vosk/                # Резервные speech-модели
 ├── plugins/                 # Расширения
-├── services/jarvis/         # Внешний API-сервис (опционально)
+├── services/nexa/           # Внешний Nexa Access API (опционально)
 ├── scripts/                 # setup-voice, build-renderer
 └── build/                   # Иконки для electron-builder
 ```
@@ -254,6 +246,6 @@ flowchart TB
 
 **Nexa Assistant** — голосовой помощник на вашем компьютере.
 
-[⬆ Наверх](#nexa-assistant)
+[Telegram @Nexa_Assistant](https://t.me/Nexa_Assistant) · [⬆ Наверх](#nexa-assistant)
 
 </div>

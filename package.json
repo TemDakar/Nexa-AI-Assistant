@@ -16,8 +16,9 @@
 		"start:mac": "env -u ELECTRON_RUN_AS_NODE electron .",
 		"dist:win": "npm run build && electron-builder --win",
 		"dist:mac": "npm run build && electron-builder --mac",
-		"dist": "npm run build && electron-builder --win --mac",
-		"dist:publish": "npm run build && electron-builder --win --mac --publish always",
+		"dist:linux": "npm run build && electron-builder --linux",
+		"dist": "npm run build && electron-builder --win --mac --linux",
+		"dist:publish": "npm run build && electron-builder --win --mac --linux --publish always",
 		"dist:publish:win": "npm run build && electron-builder --win --publish always"
 	},
 	"build": {
@@ -66,6 +67,13 @@
 			"category": "public.app-category.productivity",
 			"icon": "build/icon.ico",
 			"artifactName": "${productName}-${version}-${arch}.${ext}"
+		},
+		"linux": {
+			"target": ["AppImage", "deb"],
+			"category": "Utility",
+			"icon": "build/icon.ico",
+			"artifactName": "${productName}-${version}-${arch}.${ext}",
+			"maintainer": "Nexa <nexa@local>"
 		},
 		"nsis": {
 			"oneClick": false,
