@@ -19,6 +19,10 @@ out/
 *.exe
 !resources/whisper/whisper_recognition.exe
 
+# Локальный ffmpeg (ставится вручную или через brew/winget)
+resources/ffmpeg/ffmpeg
+resources/ffmpeg/ffmpeg.exe
+
 # Vue frontend (after `npm run build` in vue/)
 vue/dist/
 

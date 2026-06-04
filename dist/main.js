@@ -413,21 +413,24 @@ function getIconPath() {
 	const res =
 		process.resourcesPath ||
 		path.join(path.dirname(process.execPath), 'resources')
-	const candidates = electron_1.app.isPackaged
-		? [
-				path.join(res, 'icon.ico'),
-				path.join(__dirname, '..', 'build', 'icon.ico'),
-			]
-		: [
-				path.join(__dirname, '..', 'build', 'icon.ico'),
-				path.join(electron_1.app.getAppPath(), 'build', 'icon.ico'),
-				path.join(res, 'icon.ico'),
-				path.join(process.cwd(), 'build', 'icon.ico'),
-			]
+	const buildDir = path.join(__dirname, '..', 'build')
+	const iconNames =
+		process.platform === 'darwin'
+			? ['icon.icns', 'icon.ico', 'icon.png']
+			: ['icon.ico', 'icon.png']
+	const bases = electron_1.app.isPackaged
+		? [res, buildDir]
+		: [buildDir, electron_1.app.getAppPath(), res, process.cwd()]
+	const candidates = []
+	for (const base of bases) {
+		for (const name of iconNames) {
+			candidates.push(path.join(base, name), path.join(base, 'build', name))
+		}
+	}
 	for (const p of candidates) {
 		if (p && fs.existsSync(p)) return p
 	}
-	return path.join(__dirname, '..', 'build', 'icon.ico')
+	return path.join(buildDir, 'icon.ico')
 }
 
 function createWindow() {
@@ -1405,56 +1408,82 @@ electron_1.ipcMain.handle('get-app-version', async () => {
 })
 electron_1.ipcMain.handle('get-app-path', async () => {
 	try {
-		const path_1 = require('path')
-		// В dev режиме возвращаем путь к проекту, в production - к ресурсам
 		if (electron_1.app.isPackaged) {
-			return path_1.join(electron_1.app.getAppPath(), 'resources', 'app')
-		} else {
-			return process.cwd()
+			return process.resourcesPath || electron_1.app.getAppPath()
 		}
+		return process.cwd()
 	} catch (error) {
 		console.error('Error getting app path:', error)
 		return process.cwd()
 	}
 })
 
-// Helper: Python для Whisper на macOS (предпочитаем venv проекта)
-function getMacPythonExecutable() {
-	const roots = [
-		electron_1.app.getAppPath(),
-		process.cwd(),
-		path.join(__dirname, '..'),
-	]
-	for (const root of roots) {
+function getWhisperResourceRoots() {
+	const roots = []
+	if (electron_1.app.isPackaged && process.resourcesPath) {
+		roots.push(process.resourcesPath)
+	}
+	roots.push(electron_1.app.getAppPath(), process.cwd(), path.join(__dirname, '..'))
+	return [...new Set(roots.filter(Boolean))]
+}
+
+function getWhisperPythonExecutable() {
+	const isWin = process.platform === 'win32'
+	for (const root of getWhisperResourceRoots()) {
 		const venvPython = path.join(
 			root,
 			'resources',
 			'whisper',
 			'.venv',
-			'bin',
-			'python3',
+			isWin ? 'Scripts' : 'bin',
+			isWin ? 'python.exe' : 'python3',
 		)
 		if (fs.existsSync(venvPython)) return venvPython
 	}
-	return 'python3'
+	return isWin ? 'python' : 'python3'
+}
+
+function findWhisperFile(name) {
+	for (const root of getWhisperResourceRoots()) {
+		const p = path.join(root, 'resources', 'whisper', name)
+		if (p && fs.existsSync(p)) return p
+	}
+	return null
+}
+
+function resolveFfmpegFromPath() {
+	try {
+		const cmd = process.platform === 'win32' ? 'where ffmpeg' : 'which ffmpeg'
+		const { stdout } = require('child_process').execSync(cmd, {
+			encoding: 'utf8',
+			windowsHide: true,
+			timeout: 5000,
+		})
+		const first = (stdout || '')
+			.trim()
+			.split(/\r?\n/)
+			.find(l => l && fs.existsSync(l.trim()))
+		return first ? first.trim() : null
+	} catch (_e) {
+		return null
+	}
 }
 
 function resolveFfmpegPath() {
 	if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
 		return process.env.FFMPEG_PATH
 	}
-	const candidates =
-		process.platform === 'darwin'
-			? [
-					'/opt/homebrew/bin/ffmpeg',
-					'/usr/local/bin/ffmpeg',
-					path.join(electron_1.app.getAppPath(), 'resources', 'ffmpeg', 'ffmpeg'),
-					path.join(process.cwd(), 'resources', 'ffmpeg', 'ffmpeg'),
-				]
-			: [
-					path.join(electron_1.app.getAppPath(), 'resources', 'ffmpeg', 'ffmpeg.exe'),
-					path.join(process.cwd(), 'resources', 'ffmpeg', 'ffmpeg.exe'),
-				]
+	const isWin = process.platform === 'win32'
+	const bundledName = isWin ? 'ffmpeg.exe' : 'ffmpeg'
+	const candidates = []
+	for (const root of getWhisperResourceRoots()) {
+		candidates.push(path.join(root, 'resources', 'ffmpeg', bundledName))
+	}
+	if (process.platform === 'darwin') {
+		candidates.push('/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg')
+	}
+	const fromPath = resolveFfmpegFromPath()
+	if (fromPath) candidates.push(fromPath)
 	for (const p of candidates) {
 		if (p && fs.existsSync(p)) return p
 	}
@@ -1468,54 +1497,41 @@ function getWhisperRuntimeEnv() {
 	return env
 }
 
-// Helper: путь к Whisper в зависимости от платформы (Windows: .exe, macOS: .py + python3)
-function getWhisperPath() {
-	const isMac = process.platform === 'darwin'
-	if (isMac) {
-		const macPython = getMacPythonExecutable()
-		const appPath = electron_1.app.isPackaged
-			? path.join(process.resourcesPath, 'resources', 'whisper', 'whisper_recognition.py')
-			: path.join(electron_1.app.getAppPath(), 'resources', 'whisper', 'whisper_recognition.py')
-		const candidates = [
-			appPath,
-			path.join(electron_1.app.getAppPath(), 'resources', 'whisper', 'whisper_recognition.py'),
-			path.join(process.cwd(), 'resources', 'whisper', 'whisper_recognition.py'),
-		]
-		for (const p of candidates) {
-			if (p && fs.existsSync(p))
-				return { scriptPath: p, type: 'python', executable: macPython }
-		}
-		return {
-			scriptPath: null,
-			type: 'python',
-			executable: macPython,
-			error: `whisper_recognition.py не найден. Пути: ${candidates.join(', ')}`,
-		}
+function getWhisperFfmpegHint() {
+	if (process.platform === 'darwin') {
+		return 'FFmpeg не найден. Установите: brew install ffmpeg или положите ffmpeg в resources/ffmpeg/'
 	}
-	const appPath = electron_1.app.isPackaged
-		? path.join(process.resourcesPath, 'resources', 'whisper', 'whisper_recognition.exe')
-		: path.join(electron_1.app.getAppPath(), 'resources', 'whisper', 'whisper_recognition.exe')
-	const altPath1 = path.join(
-		electron_1.app.getAppPath(),
-		'resources',
-		'whisper',
-		'whisper_recognition.exe',
-	)
-	const altPath2 = path.join(process.cwd(), 'resources', 'whisper', 'whisper_recognition.exe')
-	const altPath3 = path.join(
-		process.cwd(),
-		'resources',
-		'whisper',
-		'whisper_recognition.exe',
-	)
-	const candidates = [appPath, altPath1, altPath2, altPath3]
-	for (const p of candidates) {
-		if (p && fs.existsSync(p)) return { scriptPath: p, type: 'exe' }
+	if (process.platform === 'win32') {
+		return 'FFmpeg не найден. winget install Gyan.FFmpeg или положите ffmpeg.exe в resources/ffmpeg/'
+	}
+	return 'FFmpeg не найден. Установите ffmpeg в PATH или resources/ffmpeg/'
+}
+
+// Whisper: Windows — .exe (если собран) или Python; macOS — Python + venv
+function getWhisperPath() {
+	const pyScript = findWhisperFile('whisper_recognition.py')
+	const exeScript = findWhisperFile('whisper_recognition.exe')
+	const python = getWhisperPythonExecutable()
+
+	if (process.platform === 'win32' && exeScript) {
+		return { scriptPath: exeScript, type: 'exe' }
+	}
+	if (pyScript) {
+		return { scriptPath: pyScript, type: 'python', executable: python }
+	}
+
+	const tried = []
+	for (const root of getWhisperResourceRoots()) {
+		tried.push(path.join(root, 'resources', 'whisper'))
 	}
 	return {
 		scriptPath: null,
-		type: 'exe',
-		error: `whisper_recognition.exe не найден. Пути: ${candidates.join(', ')}`,
+		type: 'python',
+		executable: python,
+		error:
+			process.platform === 'win32'
+				? `Whisper не найден. Запустите: npm run setup:voice. Проверены: ${tried.join(', ')}`
+				: `whisper_recognition.py не найден. Запустите: npm run setup:voice. Пути: ${tried.join(', ')}`,
 	}
 }
 
@@ -1530,10 +1546,7 @@ electron_1.ipcMain.handle('whisper-check', async () => {
 		if (!ffmpegPath) {
 			return {
 				available: false,
-				error:
-					process.platform === 'darwin'
-						? 'FFmpeg не найден. Установите: brew install ffmpeg'
-						: 'FFmpeg не найден. Положите ffmpeg.exe в resources/ffmpeg/',
+				error: getWhisperFfmpegHint(),
 			}
 		}
 		if (type === 'python') {

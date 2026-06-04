@@ -9,11 +9,16 @@
 	},
 	"main": "dist/main.js",
 	"scripts": {
-		"build": "npm --prefix vue run build",
-		"setup:voice": "bash scripts/setup-voice-macos.sh",
+		"build": "node scripts/build-renderer.js",
+		"setup:voice": "node scripts/setup-voice.js",
+		"setup:voice:mac": "bash scripts/setup-voice-macos.sh",
 		"start": "electron .",
-		"dist": "npm run build && electron-builder --win",
-		"dist:publish": "npm run build && electron-builder --win --publish always"
+		"start:mac": "env -u ELECTRON_RUN_AS_NODE electron .",
+		"dist:win": "npm run build && electron-builder --win",
+		"dist:mac": "npm run build && electron-builder --mac",
+		"dist": "npm run build && electron-builder --win --mac",
+		"dist:publish": "npm run build && electron-builder --win --mac --publish always",
+		"dist:publish:win": "npm run build && electron-builder --win --publish always"
 	},
 	"build": {
 		"appId": "com.nexa.app",
@@ -32,7 +37,9 @@
 				"from": "resources",
 				"to": "resources",
 				"filter": [
-					"**/*"
+					"**/*",
+					"!**/.venv/**",
+					"!**/__pycache__/**"
 				]
 			}
 		],
@@ -48,13 +55,17 @@
 			"target": [
 				{
 					"target": "nsis",
-					"arch": [
-						"x64"
-					]
+					"arch": ["x64"]
 				}
 			],
 			"icon": "build/icon.ico",
 			"artifactName": "${productName}-Setup-${version}.${ext}"
+		},
+		"mac": {
+			"target": ["dmg", "zip"],
+			"category": "public.app-category.productivity",
+			"icon": "build/icon.ico",
+			"artifactName": "${productName}-${version}-${arch}.${ext}"
 		},
 		"nsis": {
 			"oneClick": false,
@@ -71,7 +82,8 @@
 		"compression": "maximum",
 		"asar": true,
 		"asarUnpack": [
-			"resources/whisper/whisper_recognition.exe"
+			"resources/whisper/whisper_recognition.exe",
+			"resources/ffmpeg/ffmpeg.exe"
 		],
 		"npmRebuild": false
 	},

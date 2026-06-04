@@ -17,7 +17,7 @@
     {
       "from": "resources",
       "to": "resources",
-      "filter": ["**/*"]
+      "filter": ["**/*", "!**/.venv/**", "!**/__pycache__/**"]
     },
     {
       "from": "build/icon.ico",

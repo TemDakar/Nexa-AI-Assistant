@@ -78,6 +78,20 @@ def get_ffmpeg_path():
             "/usr/local/bin/ffmpeg",
         ])
 
+    # Windows: типичные пути установки и PATH
+    if is_windows:
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        for root in (program_files, program_files_x86):
+            possible_paths.extend([
+                os.path.join(root, "ffmpeg", "bin", "ffmpeg.exe"),
+                os.path.join(root, "Gyan", "FFmpeg", "bin", "ffmpeg.exe"),
+            ])
+        path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+        for d in path_dirs:
+            if d:
+                possible_paths.append(os.path.join(d, "ffmpeg.exe"))
+
     # PyInstaller / bundled
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
@@ -122,8 +136,9 @@ def convert_webm_to_wav(webm_path, wav_path):
             f"Проверялся путь: {ffmpeg_path}\n\n"
             "Решение:\n"
             "1. macOS: brew install ffmpeg\n"
-            "2. Windows: положите ffmpeg.exe в resources/ffmpeg/\n"
-            "3. Или передайте путь через переменную окружения FFMPEG_PATH"
+            "2. Windows: winget install Gyan.FFmpeg или ffmpeg.exe в resources/ffmpeg/\n"
+            "3. Запустите: npm run setup:voice\n"
+            "4. Или переменная окружения FFMPEG_PATH"
         )
 
     if not os.path.exists(webm_path):
